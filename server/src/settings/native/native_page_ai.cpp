@@ -872,7 +872,8 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         auto modelField = std::make_shared<Field>(L"模型", modelRow);
         auto tail = std::make_shared<Column>(0.0f);
         tail->Add(std::make_shared<MinHeight>(actions, 20.0f));
-        // 两类操作共用固定反馈区；预留一行逻辑高度，避免单行提示出现或清理时推动下方字段。
+        // Both operations share one feedback area. Reserve one line in DIPs so showing or clearing a
+        // single-line message does not move the fields below.
         auto feedback = std::make_shared<MinHeight>(fetchStatus, 20.0f);
         feedback->SetMargin({0.0f, 7.0f, 0.0f, 0.0f});
         tail->Add(feedback);

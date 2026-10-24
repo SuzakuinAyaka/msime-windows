@@ -222,7 +222,8 @@ class CredentialTest
                    std::function<std::string()> service, std::function<Json()> readConfig,
                    std::function<void()> beforeStart = {});
 
-    // 作废当前请求和超时回调，并清理反馈；不取消已经提交给宿主的网络任务。
+    // Invalidate the current request and timeout callback, and clear feedback without cancelling
+    // network tasks already submitted to the host.
     void Reset();
 
   private:

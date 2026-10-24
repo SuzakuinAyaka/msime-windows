@@ -53,7 +53,7 @@ class FeedbackHost : public HostServices
 class FeedbackScene
 {
   public:
-    // AI 页会被 KeepAlive 保留，连同它引用的上下文一起保留到进程退出。
+    // KeepAlive retains the AI page, so retain its referenced context until process exit too.
     static FeedbackScene &Open(float dpi = 96.0f)
     {
         return *new FeedbackScene(dpi);
@@ -129,7 +129,7 @@ class FeedbackScene
                            {"message", ok ? "连接成功" : Narrow(kError)},
                            {"models", Json::array({"test-model"})}}
                           .dump());
-        // 模型菜单可能盖住反馈区域，断言前关闭它，避免把遮挡误当成状态清理。
+        // Close the model menu before assertions so occlusion cannot look like cleared feedback.
         if (ok && !connection)
             harness.Window().GetScene()->ClearPopups(true);
         harness.Layout();
@@ -207,7 +207,7 @@ TEST_CASE(settings_ai_feedback_stays_in_one_reserved_row_at_each_dpi)
 
 TEST_CASE(settings_shared_credential_test_keeps_default_config_change_feedback)
 {
-    // 使用未传 AI 页协调回调的构造方式，覆盖语音等页面沿用的默认行为。
+    // Omit the AI coordination callback to cover the default behavior used by voice and other pages.
     auto &scene = FeedbackScene::Open();
     auto button = std::make_shared<PlainButton>(L"测试连接", CredentialButtonStyle());
     auto status = std::make_shared<StatusText>();
@@ -281,7 +281,7 @@ TEST_CASE(settings_ai_configuration_changes_clear_feedback_and_invalidate_reques
             scene.Snapshot(changed);
             REQUIRE(!scene.testButton->IsDisabled());
             REQUIRE(!scene.fetchButton->IsDisabled());
-            // 切回原配置也不能让离开前的请求重新有效。
+            // Returning to the original config must not make a superseded request valid again.
             scene.Snapshot(initial);
             scene.Reply(connection, old);
             REQUIRE_EQ(scene.ErrorCount(), size_t{0});
