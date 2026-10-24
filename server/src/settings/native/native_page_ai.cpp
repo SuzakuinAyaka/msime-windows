@@ -533,6 +533,7 @@ struct AiPage : std::enable_shared_from_this<AiPage>
     std::shared_ptr<StatusText> fetchStatus;
     std::unique_ptr<CredentialTest> test;
     std::string pendingFetch;
+    Json pendingFetchConfig;
     // 切换模式或服务商后，配置要等宿主写盘并推回快照才算落地。这期间状态栏说「保存中」，
     // 免得「界面已经切好、后端还是旧服务商」的那几百毫秒被当成已经可用。
     bool saving = false;
@@ -659,7 +660,7 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         // 选择器不自带模型清单：官方 TypeSafe 只认内置模型名，自建实现的模型名由用户填。
         // 这个按钮在 select 模式下只会返回一句「不提供模型列表」，不如直接关掉。
         if (fetchButton)
-            fetchButton->SetDisabled(select);
+            fetchButton->SetDisabled(select || !pendingFetch.empty());
         RefreshStatus();
     }
 
@@ -688,25 +689,33 @@ struct AiPage : std::enable_shared_from_this<AiPage>
                                   : L"尚未启用；下面的配置保存后，打开总开关才会生效。");
     }
 
-    void ClearModelMenu()
+    void ClearFetchFeedback()
     {
         pendingFetch.clear();
-        fetchButton->SetDisabled(false);
+        pendingFetchConfig = Json();
+        fetchButton->SetDisabled(mode == "select");
         fetchButton->SetText(L"查询模型");
-        model->SetModels({});
         fetchStatus->Clear();
+    }
+
+    void InvalidateFeedback(bool clearModels = false)
+    {
+        test->Reset();
+        ClearFetchFeedback();
+        if (clearModels)
+            model->SetModels({});
     }
 
     void SwitchProvider(const std::string &next)
     {
         if (next == provider)
             return;
+        InvalidateFeedback(true);
         provider = next;
         Write("ai_assistant.provider", provider);
         saving = true;
         providerDropdown->SetValue(provider);
         ApplyProviderFields();
-        ClearModelMenu();
         SyncLayout();
     }
 
@@ -714,6 +723,7 @@ struct AiPage : std::enable_shared_from_this<AiPage>
     {
         if (next == mode)
             return;
+        InvalidateFeedback(true);
         mode = next;
         const std::string target = AiProviderForMode(mode, provider);
         if (target != provider)
@@ -726,7 +736,6 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         RefreshChoices();
         providerDropdown->SetValue(provider);
         ApplyProviderFields();
-        ClearModelMenu();
         SyncLayout();
     }
 
@@ -742,21 +751,25 @@ struct AiPage : std::enable_shared_from_this<AiPage>
     {
         if (!pendingFetch.empty())
             return;
+        test->Reset();
         pendingFetch = context.model.NewRequestId("models");
+        pendingFetchConfig = CurrentConfig();
         fetchButton->SetDisabled(true);
         fetchButton->SetText(L"获取中…");
         fetchStatus->Set(L"正在向服务商查询模型列表…", "pending");
-        context.model.Post("apiModelList",
-                           Json{{"requestId", pendingFetch}, {"service", "ai.assistant"}, {"config", CurrentConfig()}});
+        context.model.Post(
+            "apiModelList",
+            Json{{"requestId", pendingFetch}, {"service", "ai.assistant"}, {"config", pendingFetchConfig}});
     }
 
     void OnModels(const Json &message)
     {
         if (pendingFetch.empty() || message.value("requestId", std::string()) != pendingFetch)
             return;
-        pendingFetch.clear();
-        fetchButton->SetDisabled(false);
-        fetchButton->SetText(L"查询模型");
+        const bool configMatches = pendingFetchConfig == CurrentConfig();
+        ClearFetchFeedback();
+        if (!configMatches)
+            return;
         if (!message.value("ok", false))
         {
             fetchStatus->Set(Widen(message.value("message", std::string())), "error");
@@ -789,6 +802,8 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         // 首帧快照可能早于控件构建完成，和 SyncLayout 一样先确认控件已就绪。
         if (!modeGroup || !providerDropdown || !endpoint || !model || !token || !limit || !promptSlot || !prompt)
             return;
+        const Json previousConfig = CurrentConfig();
+        const std::string previousMode = mode;
         const SettingsModel &m = context.model;
         // 快照回来了，说明上次的写入已经落地，状态栏可以显示最终结果。
         saving = false;
@@ -801,6 +816,8 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         provider = AiProviderForMode(mode, remembered.empty() ? stored : remembered);
         providerDropdown->SetValue(provider);
         ApplyProviderFields();
+        if (previousConfig != CurrentConfig() || previousMode != mode)
+            InvalidateFeedback(true);
         limit->SetText(std::to_wstring(m.GetInt("ai_assistant.candidate_limit", 3)));
         promptId = m.GetString("ai_assistant.prompt_id", "custom_1");
         const Json *custom1 = m.Find("ai_assistant.prompt_custom_1");
@@ -832,9 +849,13 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         providerField = std::make_shared<Hideable>(std::make_shared<Field>(L"服务提供商", providerDropdown));
         grid->Add(providerField);
         model = std::make_shared<ModelCombo>();
-        model->SetOnPicked([this](const std::wstring &value) { WriteProviderValue("model", Narrow(value)); });
+        model->SetOnPicked([this](const std::wstring &value) {
+            InvalidateFeedback();
+            WriteProviderValue("model", Narrow(value));
+        });
         model->SetOnFetch([this]() { Fetch(); });
         model->Input()->SetOnCommit([this](const std::wstring &text) {
+            InvalidateFeedback();
             // 空值表示回到默认模型：写空串让后端补默认值，界面上显示占位符。
             WriteProviderValue("model", Trimmed(Narrow(text)));
         });
@@ -845,21 +866,21 @@ struct AiPage : std::enable_shared_from_this<AiPage>
         modelRow->Add(model, 1.0f);
         modelRow->Add(fetchButton);
         auto testButton = std::make_shared<PlainButton>(L"测试连接", CredentialButtonStyle());
-        auto testStatus = std::make_shared<StatusText>();
         auto actions = std::make_shared<Row>(10.0f);
         actions->Add(testButton);
-        actions->Add(testStatus, 1.0f);
         fetchStatus = std::make_shared<StatusText>();
         auto modelField = std::make_shared<Field>(L"模型", modelRow);
         auto tail = std::make_shared<Column>(0.0f);
         tail->Add(std::make_shared<MinHeight>(actions, 20.0f));
-        fetchStatus->SetMargin({0.0f, 7.0f, 0.0f, 0.0f});
-        tail->Add(fetchStatus);
+        // 两类操作共用固定反馈区；预留一行逻辑高度，避免单行提示出现或清理时推动下方字段。
+        auto feedback = std::make_shared<MinHeight>(fetchStatus, 20.0f);
+        feedback->SetMargin({0.0f, 7.0f, 0.0f, 0.0f});
+        tail->Add(feedback);
         modelField->Add(tail);
         grid->Add(modelField);
         test = std::make_unique<CredentialTest>(
-            context, testButton, testStatus, []() { return std::string("ai.assistant"); },
-            [this]() { return CurrentConfig(); });
+            context, testButton, fetchStatus, []() { return std::string("ai.assistant"); },
+            [this]() { return CurrentConfig(); }, [this]() { ClearFetchFeedback(); });
         context.OnMessage("apiModelListResult", [weak = weak_from_this()](const Json &message) {
             if (auto page = weak.lock())
                 page->OnModels(message);
@@ -870,6 +891,7 @@ struct AiPage : std::enable_shared_from_this<AiPage>
             // 不用 Token 的服务商不落盘，免得留下一个谁都不读的空槽或旧值。
             if (!AiAssistant::ProviderUsesToken(provider))
                 return;
+            InvalidateFeedback(true);
             Write("ai_assistant.token_" + provider, Trimmed(Narrow(text)));
             RefreshStatus();
         });
@@ -908,6 +930,7 @@ struct AiPage : std::enable_shared_from_this<AiPage>
 
         endpoint = GridInput();
         endpoint->SetOnCommit([this](const std::wstring &text) {
+            InvalidateFeedback(true);
             WriteProviderValue("endpoint", Trimmed(Narrow(text)));
             // 端点变了，思考强度是否生效也跟着变（后端按域名判定）。
             SyncLayout();

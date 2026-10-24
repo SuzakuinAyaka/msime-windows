@@ -941,9 +941,9 @@ void CancelTimeout(UINT_PTR id)
 
 CredentialTest::CredentialTest(PageContext &context, std::shared_ptr<PlainButton> button,
                                std::shared_ptr<StatusText> status, std::function<std::string()> service,
-                               std::function<Json()> readConfig)
+                               std::function<Json()> readConfig, std::function<void()> beforeStart)
     : context_(&context), button_(std::move(button)), status_(std::move(status)), service_(std::move(service)),
-      readConfig_(std::move(readConfig))
+      readConfig_(std::move(readConfig)), beforeStart_(std::move(beforeStart))
 {
     idleLabel_ = button_->Text();
     button_->SetOnClick([this]() { Start(); });
@@ -965,6 +965,8 @@ void CredentialTest::Start()
 {
     if (!pendingId_.empty())
         return;
+    if (beforeStart_)
+        beforeStart_();
     pendingId_ = context_->model.NewRequestId("credential");
     pendingService_ = service_();
     pendingSnapshot_ = readConfig_();
@@ -990,6 +992,12 @@ void CredentialTest::Finish()
     pendingId_.clear();
     button_->SetDisabled(false);
     button_->SetText(idleLabel_);
+}
+
+void CredentialTest::Reset()
+{
+    Finish();
+    status_->Clear();
 }
 
 // ---------------------------------------------------------------------------------

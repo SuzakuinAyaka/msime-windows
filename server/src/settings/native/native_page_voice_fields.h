@@ -219,7 +219,11 @@ class CredentialTest
 {
   public:
     CredentialTest(PageContext &context, std::shared_ptr<PlainButton> button, std::shared_ptr<StatusText> status,
-                   std::function<std::string()> service, std::function<Json()> readConfig);
+                   std::function<std::string()> service, std::function<Json()> readConfig,
+                   std::function<void()> beforeStart = {});
+
+    // 作废当前请求和超时回调，并清理反馈；不取消已经提交给宿主的网络任务。
+    void Reset();
 
   private:
     void Start();
@@ -230,6 +234,7 @@ class CredentialTest
     std::shared_ptr<StatusText> status_;
     std::function<std::string()> service_;
     std::function<Json()> readConfig_;
+    std::function<void()> beforeStart_;
     std::wstring idleLabel_;
     std::string pendingId_;
     std::string pendingService_;
